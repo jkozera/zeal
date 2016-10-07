@@ -142,10 +142,15 @@ QString SQLiteDriver::stringValue(int i)
 }
 
 
-sqlite3_int64 SQLiteDriver::intValue(int i)
+qint64 SQLiteDriver::intValue(int i)
 {
     if (m_stmt == nullptr) {
         return 0;
     }
     return sqlite3_column_int64(m_stmt, i);
+}
+
+sqlite3 *SQLiteDriver::handle()
+{
+    return m_db;
 }

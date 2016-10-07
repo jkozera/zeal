@@ -43,7 +43,8 @@ public:
     bool next();
     void finalize();
     QString stringValue(int index);
-    sqlite3_int64 intValue(int index);
+    qint64 intValue(int index);
+    sqlite3* handle();
 
 private:
     void updateLastError();

@@ -28,12 +28,24 @@
 
 #include <util/plist.h>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QVariant>
+
+#include <string>
+
+#include <sqlite3.h>
+#include <string.h>
+
+static void scoreFunc(
+    sqlite3_context *context,
+    int argc,
+    sqlite3_value **argv
+);
 
 using namespace Zeal::Registry;
 
@@ -120,6 +132,8 @@ Docset::Docset(const QString &path) :
         return;
     }
 
+    sqlite3 *handle = m_database->handle();
+    sqlite3_create_function(handle, "zealScore", 2, SQLITE_UTF8, 0, scoreFunc, 0, 0);
     m_type = m_database->tables().contains(QStringLiteral("searchIndex")) ? Type::Dash : Type::ZDash;
 
     createIndex();
@@ -251,12 +265,12 @@ QList<SearchResult> Docset::search(const QString &query, const CancellationToken
 
     QString queryStr;
     if (m_type == Docset::Type::Dash) {
-        queryStr = QStringLiteral("SELECT name, type, path "
+        queryStr = QStringLiteral("SELECT name, type, path, zealScore('%1', name) as score "
                                   "    FROM searchIndex "
-                                  "WHERE (name LIKE '%%1%' ESCAPE '\\') "
-                                  "ORDER BY name COLLATE NOCASE").arg(sanitizedQuery);
+                                  "WHERE score > 0 "
+                                  "ORDER BY score DESC").arg(sanitizedQuery);
     } else {
-        queryStr = QStringLiteral("SELECT ztokenname, ztypename, zpath, zanchor "
+        queryStr = QStringLiteral("SELECT ztokenname, ztypename, zpath, zanchor, zealScore('%1', ztokenname) as score "
                                   "    FROM ztoken "
                                   "LEFT JOIN ztokenmetainformation "
                                   "    ON ztoken.zmetainformation = ztokenmetainformation.z_pk "
@@ -264,8 +278,8 @@ QList<SearchResult> Docset::search(const QString &query, const CancellationToken
                                   "    ON ztokenmetainformation.zfile = zfilepath.z_pk "
                                   "LEFT JOIN ztokentype "
                                   "    ON ztoken.ztokentype = ztokentype.z_pk "
-                                  "WHERE (ztokenname LIKE '%%1%' ESCAPE '\\') "
-                                  "ORDER BY ztokenname COLLATE NOCASE").arg(sanitizedQuery);
+                                  "WHERE score > 0 "
+                                  "ORDER BY score DESC").arg(sanitizedQuery);
     }
 
     // Limit for very short queries.
@@ -280,7 +294,8 @@ QList<SearchResult> Docset::search(const QString &query, const CancellationToken
         results.append({m_database->stringValue(0),
                         parseSymbolType(m_database->stringValue(1)),
                         const_cast<Docset *>(this),
-                        createPageUrl(m_database->stringValue(2), m_database->stringValue(3))});
+                        createPageUrl(m_database->stringValue(2), m_database->stringValue(3)),
+                        m_database->intValue(4)});
     }
 
     return results;
@@ -319,7 +334,8 @@ QList<SearchResult> Docset::relatedLinks(const QUrl &url) const
         results.append({m_database->stringValue(0),
                         parseSymbolType(m_database->stringValue(1)),
                         const_cast<Docset *>(this),
-                        createPageUrl(m_database->stringValue(2), m_database->stringValue(3))});
+                        createPageUrl(m_database->stringValue(2), m_database->stringValue(3)),
+                        0});
     }
 
     if (results.size() == 1)
@@ -605,4 +621,145 @@ QString Docset::parseSymbolType(const QString &str)
     };
 
     return aliases.value(str, str);
+}
+
+// ported from DevDocs' searcher.coffee:
+// (https://github.com/Thibaut/devdocs/blob/50f583246d5fbd92be7b71a50bfa56cf4e239c14/assets/javascripts/app/searcher.coffee#L91)
+static void match_fuzzy(
+        const char* needle, const char* haystack,
+        int* start, int* len, int* needle_len
+) {
+    int i = 0, j = 0;
+    for (; needle[i] != 0; ++i) {
+        while(haystack[j] != 0) {
+            if (needle[i] == haystack[j++]) {
+                if (*start == -1) *start = j - 1;  // first matched char
+                *len = j - *start;
+                goto outer;
+            }
+        }
+        *start = -1;  // end of haystack, char not found
+        return;
+        outer: continue;
+    }
+    if (needle_len)
+        *needle_len = i;
+}
+
+static int score_exact(int match_index, int match_len, const char* value) {
+    int score = 100, value_len = strlen((const char*)value);
+    // Remove one point for each unmatched character.
+    score -= (value_len - match_len);
+    if (match_index > 0) {
+        if (value[match_index - 1] == '.') {
+            // If the character preceding the query is a dot, assign the same
+            // score as if the query was found at the beginning of the string,
+            // minus one.
+            score += (match_index - 1);
+        } else if (match_len == 1) {
+            // Don't match a single-character query unless it's found at the
+            // beginning of the string or is preceded by a dot.
+            return 0;
+        } else {
+            // (1) Remove one point for each unmatched character up to
+            //     the nearest preceding dot or the beginning of the
+            //     string.
+            // (2) Remove one point for each unmatched character
+            //     following the query.
+            int i = match_index - 2;
+            while (i >= 0 && value[i] != '.') --i;
+            score -= (match_index - i) +                     // (1)
+                     (value_len - match_len - match_index);  // (2)
+        }
+        // Remove one point for each dot preceding the query, except for the
+        // one immediately before the query.
+        int separators = 0,
+            i = match_index - 2;
+        while (i >= 0) {
+            if (value[i] == '.') {
+                separators += 1;
+            }
+            i--;
+        }
+        score -= separators;
+    }
+
+    // Remove five points for each dot following the query.
+    int separators = 0;
+    int i = value_len - match_len - match_index - 1;
+    while (i >= 0){
+        if (value[match_index + match_len + i] == '.') {
+            separators += 1;
+        }
+        i--;
+    }
+    score -= separators * 5;
+
+    return qMax(1, score);
+}
+
+static int score_fuzzy(int match_index, int match_len, const char* value) {
+    if (match_index == 0 || value[match_index-1] == '.') {
+        return qMax(66, 100 - match_len);
+    } else {
+        if (value[match_index + match_len - 1] == 0) {
+            return qMax(33, 67 - match_len);
+        } else {
+            return qMax(1, 34 - match_len);
+        }
+    }
+}
+
+static void replace_all(std::string str, const std::string& from, const std::string& to) {
+     size_t start_pos = 0;
+     while((start_pos = str.find(from, start_pos)) != std::string::npos) {
+         str.replace(start_pos, from.length(), to);
+         start_pos += to.length();
+     }
+}
+
+static void scoreFunc(
+    sqlite3_context *context,
+    int argc,
+    sqlite3_value **argv
+) {
+    const char* needle = (const char*)sqlite3_value_text(argv[0]);
+    const char* haystack_with_separators = (const char*)sqlite3_value_text(argv[1]);
+    std::string haystack_str(haystack_with_separators);
+    replace_all(haystack_str, "::", "."); // C++
+    replace_all(haystack_str, "/", "."); // Go
+    replace_all(haystack_str, "_", ".");
+    const char* haystack = haystack_str.c_str();
+    int match1 = -1, match1_len, needle_len;
+    match_fuzzy(needle, haystack, &match1, &match1_len, &needle_len);
+    if (match1 == -1) {
+        sqlite3_result_int(context, 0);
+        return;
+    }
+
+    if (needle_len == match1_len) { // exact match
+        sqlite3_result_int(context, score_exact(
+            match1, match1_len, haystack
+        ));
+        return;
+    }
+
+    int best = score_fuzzy(match1, match1_len, haystack);
+    int last_index_of_dot = -1, i;
+    for (i = 0; haystack[i] != 0; ++i) {
+        if (haystack[i] == '.') last_index_of_dot = i;
+    }
+    if (last_index_of_dot != -1) {
+        int match2 = -1, match2_len;
+        match_fuzzy(
+            needle, haystack + last_index_of_dot + 1, &match2, &match2_len,
+            0
+        );
+        if (match2 != -1) {
+            best = qMax(best,
+                score_fuzzy(match2, match2_len, haystack + last_index_of_dot + 1)
+            );
+        }
+    }
+    sqlite3_result_int(context, best);
 }
