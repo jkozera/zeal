@@ -33,9 +33,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QSqlDatabase>
-#include <QSqlError>
-#include <QSqlQuery>
 #include <QVariant>
 
 using namespace Zeal::Registry;
@@ -116,15 +113,14 @@ Docset::Docset(const QString &path) :
     if (!dir.cd(QStringLiteral("Resources")) || !dir.exists(QStringLiteral("docSet.dsidx")))
         return;
 
-    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_name);
-    db.setDatabaseName(dir.absoluteFilePath(QStringLiteral("docSet.dsidx")));
+    m_database = new Util::SQLiteDriver(dir.absoluteFilePath(QStringLiteral("docSet.dsidx")));
 
-    if (!db.open()) {
-        qWarning("SQL Error: %s", qPrintable(db.lastError().text()));
+    if (!m_database->isOpen()) {
+        qWarning("SQL Error: %s", qPrintable(m_database->lastError()));
         return;
     }
 
-    m_type = db.tables().contains(QStringLiteral("searchIndex")) ? Type::Dash : Type::ZDash;
+    m_type = m_database->tables().contains(QStringLiteral("searchIndex")) ? Type::Dash : Type::ZDash;
 
     createIndex();
 
@@ -166,7 +162,7 @@ Docset::Docset(const QString &path) :
 
 Docset::~Docset()
 {
-    QSqlDatabase::removeDatabase(m_name);
+    delete m_database;
 }
 
 bool Docset::isValid() const
@@ -279,12 +275,12 @@ QList<SearchResult> Docset::search(const QString &query, const CancellationToken
 
     QList<SearchResult> results;
 
-    QSqlQuery sqlQuery(queryStr, database());
-    while (sqlQuery.next() && !token.isCanceled()) {
-        results.append({sqlQuery.value(0).toString(),
-                        parseSymbolType(sqlQuery.value(1).toString()),
+    m_database->execute(queryStr);
+    while (m_database->next()) {
+        results.append({m_database->stringValue(0),
+                        parseSymbolType(m_database->stringValue(1)),
                         const_cast<Docset *>(this),
-                        createPageUrl(sqlQuery.value(2).toString(), sqlQuery.value(3).toString())});
+                        createPageUrl(m_database->stringValue(2), m_database->stringValue(3))});
     }
 
     return results;
@@ -318,23 +314,18 @@ QList<SearchResult> Docset::relatedLinks(const QUrl &url) const
                                   "WHERE zfilepath.zpath = \"%1\" AND ztokenmetainformation.zanchor IS NOT NULL");
     }
 
-    QSqlQuery sqlQuery(queryStr.arg(cleanUrl.toString()), database());
-    while (sqlQuery.next()) {
-        results.append({sqlQuery.value(0).toString(),
-                        parseSymbolType(sqlQuery.value(1).toString()),
+    m_database->execute(queryStr);
+    while (m_database->next()) {
+        results.append({m_database->stringValue(0),
+                        parseSymbolType(m_database->stringValue(1)),
                         const_cast<Docset *>(this),
-                        createPageUrl(sqlQuery.value(2).toString(), sqlQuery.value(3).toString())});
+                        createPageUrl(m_database->stringValue(2), m_database->stringValue(3))});
     }
 
     if (results.size() == 1)
         results.clear();
 
     return results;
-}
-
-QSqlDatabase Docset::database() const
-{
-    return QSqlDatabase::database(m_name, true);
 }
 
 void Docset::loadMetadata()
@@ -376,17 +367,16 @@ void Docset::countSymbols()
                                   " ON ztoken.ztokentype = ztokentype.z_pk GROUP BY ztypename");
     }
 
-    QSqlQuery query(queryStr, database());
-    if (query.lastError().type() != QSqlError::NoError) {
-        qWarning("SQL Error: %s", qPrintable(query.lastError().text()));
+    if (!m_database->execute(queryStr)) {
+        qWarning("SQL Error: %s", qPrintable(m_database->lastError()));
         return;
     }
 
-    while (query.next()) {
-        const QString symbolTypeStr = query.value(0).toString();
+    while (m_database->next()) {
+        const QString symbolTypeStr = m_database->stringValue(0);
         const QString symbolType = parseSymbolType(symbolTypeStr);
         m_symbolStrings.insertMulti(symbolType, symbolTypeStr);
-        m_symbolCounts[symbolType] += query.value(1).toInt();
+        m_symbolCounts[symbolType] += m_database->intValue(1);
     }
 }
 
@@ -411,16 +401,15 @@ void Docset::loadSymbols(const QString &symbolType, const QString &symbolString)
                                   "ORDER BY ztokenname ASC");
     }
 
-    QSqlQuery query(queryStr.arg(symbolString), database());
-    if (query.lastError().type() != QSqlError::NoError) {
-        qWarning("SQL Error: %s", qPrintable(query.lastError().text()));
+    if (!m_database->execute(queryStr.arg(symbolString))) {
+        qWarning("SQL Error: %s", qPrintable(m_database->lastError()));
         return;
     }
 
     QMap<QString, QUrl> &symbols = m_symbols[symbolType];
-    while (query.next())
-        symbols.insertMulti(query.value(0).toString(),
-                            createPageUrl(query.value(1).toString(), query.value(2).toString()));
+    while (m_database->next())
+        symbols.insertMulti(m_database->stringValue(0),
+                            createPageUrl(m_database->stringValue(1), m_database->stringValue(2)));
 }
 
 void Docset::createIndex()
@@ -430,19 +419,17 @@ void Docset::createIndex()
     static const QString indexCreateQuery = QStringLiteral("CREATE INDEX IF NOT EXISTS %1%2"
                                                            " ON %3 (%4 COLLATE NOCASE)");
 
-    QSqlQuery query(database());
-
     const QString tableName = m_type == Type::Dash ? QStringLiteral("searchIndex")
                                                    : QStringLiteral("ztoken");
     const QString columnName = m_type == Type::Dash ? QStringLiteral("name")
                                                     : QStringLiteral("ztokenname");
 
-    query.exec(indexListQuery.arg(tableName));
+    m_database->execute(indexListQuery.arg(tableName));
 
     QStringList oldIndexes;
 
-    while (query.next()) {
-        const QString indexName = query.value(1).toString();
+    while (m_database->next()) {
+        const QString indexName = m_database->stringValue(1);
         if (!indexName.startsWith(IndexNamePrefix))
             continue;
 
@@ -454,9 +441,9 @@ void Docset::createIndex()
 
     // Drop old indexes
     for (const QString &oldIndexName : oldIndexes)
-        query.exec(indexDropQuery.arg(oldIndexName));
+        m_database->execute(indexDropQuery.arg(oldIndexName));
 
-    query.exec(indexCreateQuery.arg(IndexNamePrefix, IndexNameVersion, tableName, columnName));
+    m_database->execute(indexCreateQuery.arg(IndexNamePrefix, IndexNameVersion, tableName, columnName));
 }
 
 QUrl Docset::createPageUrl(const QString &path, const QString &fragment) const

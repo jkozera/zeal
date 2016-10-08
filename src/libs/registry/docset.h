@@ -24,6 +24,8 @@
 #ifndef DOCSET_H
 #define DOCSET_H
 
+#include <util/sqlitedriver.h>
+
 #include <QIcon>
 #include <QMap>
 #include <QMetaObject>
@@ -76,7 +78,7 @@ private:
         ZDash
     };
 
-    QSqlDatabase database() const;
+    Util::SQLiteDriver *m_database;
     void loadMetadata();
     void countSymbols();
     void loadSymbols(const QString &symbolType) const;
