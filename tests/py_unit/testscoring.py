@@ -27,11 +27,19 @@ class ScoringTest(unittest.TestCase):
             score("argument", "argparse.ArgumentParser"),
             score("argument", "inspect.BoundArguments")
         )
+        
+        self.assertGreater(
+            score("addarg", "argparse.ArgumentParser.add_argument"),
+            0
+        )
+
+        self.assertGreater(
+            score("testrle", "AWS.ElasticTranscoder.testRole"),
+            0
+        )
 
 
 if __name__ == '__main__':
-#    ideally we'd fix this case too to allow better fuzzy matches:
-#    score("addarg", "argparse.ArgumentParser.add_argument")
-    print timeit.timeit("lib.scoreFunction('addarg', 'argparse.ArgumentParser.add_argument')", "from _scoring import lib")
+    print timeit.timeit("lib.perfTest()", "from _scoring import lib", number=2)
 
     unittest.main()

@@ -10,7 +10,7 @@ with open(__file__.replace('testscoring_build.py', '../../src/libs/registry/docs
     in_def = False
     for line in f:
         line = line.rstrip()
-        if line.startswith('static void matchFuzzy'):
+        if line.startswith('static int scoreFuzzy'):
             in_scoring = True
             scoring_lines.append('extern "C" {')
         if line.startswith('static void sqlite'):
@@ -30,7 +30,19 @@ with open(__file__.replace('testscoring_build.py', '../../src/libs/registry/docs
                     in_def = True
             scoring_lines.append(line)
 
+scoring_lines.extend('''
+    void perfTest() {
+        FILE* f = fopen("allsymbols", "r");
+        char buf[1000];
+        while(fscanf(f, "%s\\n", buf) != EOF) {
+            scoreFunction("aaaaaaaaaa", buf);
+        }
+    }
+'''.split('\n'))
+def_lines.append('void perfTest();')
 scoring_lines.append('} // extern "C"')
+
+print '\n'.join(scoring_lines)
 
 ffibuilder = FFI()
 ffibuilder.set_source(
