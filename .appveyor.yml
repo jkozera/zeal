@@ -3,15 +3,11 @@ pull_requests:
   do_not_increment_build_number: true
 branches:
   only:
-    - master
-    - stable
-    - /release\/.*/
+    - jkozera/issue-1036-build
 image:
   - Visual Studio 2015
-  - Ubuntu1804
 configuration: Release
 platform:
-  - x86
   - x64
 environment:
   APPVEYOR_YML_DISABLE_PS_LINUX: true
@@ -161,14 +157,3 @@ after_build:
 test: off
 artifacts:
   - path: zeal-*.zip
-deploy:
-  - provider: BinTray
-    username: trollixx
-    api_key:
-      secure: AsKi8j1sR34g/9+B22/dJ49X3Uie8TizgQD7lzNvW2/+deWq7oLyCQQUCrqPjOUY
-    subject: zealdocs
-    repo: windows-ci
-    package: $(ZEAL_PKG_NAME)
-    version: $(ZEAL_PKG_VERSION)
-    publish: true
-    override: true
