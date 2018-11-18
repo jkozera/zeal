@@ -85,7 +85,12 @@ DocsetsDialog::DocsetsDialog(Core::Application *app, QWidget *parent) :
     qt_ntfs_permission_lookup++;
 #endif
 
-    m_isStorageReadOnly = !QFileInfo(m_application->settings()->docsetPath).isWritable();
+    QDir docsetDir(m_application->settings()->docsetPath);
+    QString nonExistentFile(docsetDir.absoluteFilePath("just_checking.nonexistent"));
+    // NOTE this is a workaround from https://stackoverflow.com/a/1094950
+    // which attempts to check directory permissions, as opposed to "file writing"
+    // permissions - by passing a nonexistent file we should get more correct results:
+    m_isStorageReadOnly = !QFileInfo(nonExistentFile).isWritable();
 
 #ifdef Q_OS_WIN32
     qt_ntfs_permission_lookup--;
@@ -111,13 +116,6 @@ DocsetsDialog::DocsetsDialog(Core::Application *app, QWidget *parent) :
 
     setupInstalledDocsetsTab();
     setupAvailableDocsetsTab();
-
-    if (m_isStorageReadOnly) {
-        disableControls();
-
-        // Updating the docset list is fine;
-        ui->refreshButton->setEnabled(true);
-    }
 }
 
 DocsetsDialog::~DocsetsDialog()
@@ -138,6 +136,9 @@ void DocsetsDialog::reject()
 
 void DocsetsDialog::addDashFeed()
 {
+    if (!shouldWrite())
+        return;
+
     QString clipboardText = QApplication::clipboard()->text();
     if (!clipboardText.startsWith(QLatin1String("dash-feed://")))
         clipboardText.clear();
@@ -158,6 +159,9 @@ void DocsetsDialog::addDashFeed()
 
 void DocsetsDialog::updateSelectedDocsets()
 {
+    if (!shouldWrite())
+        return;
+
     for (const QModelIndex &index : ui->installedDocsetList->selectionModel()->selectedRows()) {
         if (!index.data(Registry::ItemDataRole::UpdateAvailableRole).toBool())
             continue;
@@ -168,6 +172,9 @@ void DocsetsDialog::updateSelectedDocsets()
 
 void DocsetsDialog::updateAllDocsets()
 {
+    if (!shouldWrite())
+        return;
+
     QAbstractItemModel *model = ui->installedDocsetList->model();
     for (int i = 0; i < model->rowCount(); ++i) {
         const QModelIndex index = model->index(i, 0);
@@ -226,6 +233,9 @@ void DocsetsDialog::updateDocsetFilter(const QString &filterString)
 
 void DocsetsDialog::downloadSelectedDocsets()
 {
+    if (!shouldWrite())
+        return;
+
     QItemSelectionModel *selectionModel = ui->availableDocsetList->selectionModel();
     for (const QModelIndex &index : selectionModel->selectedRows()) {
         selectionModel->select(index, QItemSelectionModel::Deselect);
@@ -358,9 +368,7 @@ void DocsetsDialog::downloadCompleted()
                     || metadata.revision() > docset->revision()) {
                 docset->hasUpdate = true;
 
-                if (!m_isStorageReadOnly) {
-                    ui->updateAllDocsetsButton->setEnabled(true);
-                }
+                ui->updateAllDocsetsButton->setEnabled(true);
 
                 ui->installedDocsetList->reset();
             }
@@ -523,6 +531,17 @@ void DocsetsDialog::loadDocsetList()
     processDocsetList(jsonDoc.array());
 }
 
+bool DocsetsDialog::shouldWrite() {
+    if (!m_isStorageReadOnly)
+        return true;
+
+    const int ret = QMessageBox::warning(this, QStringLiteral("Zeal"),
+                                         "Storage does not seem to be writable.\n"
+                                         "Do you want to try anyway?",
+                                         QMessageBox::Yes | QMessageBox::No);
+    return ret & QMessageBox::Yes;
+}
+
 void DocsetsDialog::setupInstalledDocsetsTab()
 {
     using Registry::ListModel;
@@ -530,14 +549,13 @@ void DocsetsDialog::setupInstalledDocsetsTab()
     ui->installedDocsetList->setItemDelegate(new DocsetListItemDelegate(this));
     ui->installedDocsetList->setModel(new ListModel(m_application->docsetRegistry(), this));
 
-    if (m_isStorageReadOnly) {
-        return;
-    }
-
     connect(ui->installedDocsetList, &QListView::activated, this, [this](const QModelIndex &index) {
         if (!index.data(Registry::ItemDataRole::UpdateAvailableRole).toBool()) {
             return;
         }
+
+        if (!shouldWrite())
+            return;
 
         downloadDashDocset(index);
     });
@@ -593,13 +611,12 @@ void DocsetsDialog::setupAvailableDocsetsTab()
     connect(ui->docsetFilterInput, &QLineEdit::textEdited,
             this, &DocsetsDialog::updateDocsetFilter);
 
-    if (m_isStorageReadOnly) {
-        return;
-    }
-
     connect(ui->availableDocsetList, &QListView::activated, this, [this](const QModelIndex &index) {
         // TODO: Cancel download if it's already in progress.
         if (index.data(ProgressItemDelegate::ShowProgressRole).toBool())
+            return;
+
+        if (!shouldWrite())
             return;
 
         ui->availableDocsetList->selectionModel()->select(index, QItemSelectionModel::Deselect);
@@ -632,10 +649,6 @@ void DocsetsDialog::enableControls()
 {
     // Available docsets
     ui->refreshButton->setEnabled(true);
-
-    if (m_isStorageReadOnly) {
-        return;
-    }
 
     // Installed docsets
     ui->addFeedButton->setEnabled(true);
@@ -765,9 +778,7 @@ void DocsetsDialog::processDocsetList(const QJsonArray &list)
                     || metadata.revision() > docset->revision()) {
                 docset->hasUpdate = true;
 
-                if (!m_isStorageReadOnly) {
-                    ui->updateAllDocsetsButton->setEnabled(true);
-                }
+                ui->updateAllDocsetsButton->setEnabled(true);
             }
         }
     }

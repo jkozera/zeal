@@ -61,6 +61,7 @@ void Extractor::extract(const QString &sourceFile, const QString &destination, c
 
     // TODO: Do not strip root directory in archive if it equals to 'root'
     archive_entry *entry;
+    bool anySucceeded = false;
     while (archive_read_next_header(info.archiveHandle, &entry) == ARCHIVE_OK) {
 #ifndef Q_OS_WIN32
         QString pathname = QString::fromUtf8(archive_entry_pathname(entry));
@@ -90,6 +91,8 @@ void Extractor::extract(const QString &sourceFile, const QString &destination, c
             continue;
         }
 
+        anySucceeded = true;
+
         const void *buffer;
         size_t size;
         std::int64_t offset;
@@ -112,7 +115,11 @@ void Extractor::extract(const QString &sourceFile, const QString &destination, c
         emitProgress(info);
     }
 
-    emit completed(sourceFile);
+    if (anySucceeded) {
+        emit completed(sourceFile);
+    } else {
+        emit error(sourceFile, "No files were extracted.");
+    }
     archive_read_free(info.archiveHandle);
 }
 

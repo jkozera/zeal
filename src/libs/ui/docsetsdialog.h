@@ -102,6 +102,8 @@ private:
 
     QHash<QString, QTemporaryFile *> m_tmpFiles;
 
+    bool shouldWrite();
+
     void setupInstalledDocsetsTab();
     void setupAvailableDocsetsTab();
 
