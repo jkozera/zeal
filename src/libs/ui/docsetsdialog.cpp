@@ -88,8 +88,9 @@ DocsetsDialog::DocsetsDialog(Core::Application *app, QWidget *parent) :
     QDir docsetDir(m_application->settings()->docsetPath);
     QString nonExistentFile(docsetDir.absoluteFilePath("just_checking.nonexistent"));
     // NOTE this is a workaround from https://stackoverflow.com/a/1094950
-    // which attempts to check directory permissions, as opposed to "file writing"
-    // permissions - by passing a nonexistent file we should get more correct results:
+    // which attempts to check "file writing", as opposed to directory permissions
+    // (directory permissions can be broken, as per https://github.com/zealdocs/zeal/issues/1036)
+    // - by passing a nonexistent file we should get more correct results:
     m_isStorageReadOnly = !QFileInfo(nonExistentFile).isWritable();
 
 #ifdef Q_OS_WIN32
